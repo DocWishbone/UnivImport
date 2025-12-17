@@ -46,7 +46,7 @@ from colorama import init, Fore, Style
 
 init(autoreset=True)
 
-VERSION = "2.2.1"
+VERSION = "2.2.5"
 
 #########################################
 # UnivImport.py - 17.12.2025 - m.ludwig #
@@ -58,6 +58,7 @@ UPDATE_SOURCE = r"\\hrl.local\fs\data\MindenBruhns\MBImport\UnivImport\UnivImpor
 # === Einstellungen ===
 INPUT_MB = "Mappe1.xlsx"
 INPUT_NG = "NG.xlsx"
+INPUT_NEF = "NEF.csv"
 OUTPUT_CSV = r"\\hrl.local\fs\data\niederegger\csv\mb\import.csv"
 OUTPUT_XLSX = "import.xlsx"
 
@@ -118,8 +119,8 @@ def ensure_latest_version():
 
     network_path = Path(UPDATE_SOURCE)
 
-    print(Fore.CYAN + f"[Update] Lokales Script : {local_path}")
-    print(Fore.CYAN + f"[Update] Master-Script : {network_path}")
+    # print(Fore.CYAN + f"[Update] Lokales Script : {local_path}")
+    # print(Fore.CYAN + f"[Update] Master-Script : {network_path}")
 
     if not network_path.exists():
         print(Fore.YELLOW + "[Update] Master-Script nicht gefunden – kein Update möglich.")
@@ -221,6 +222,34 @@ def load_artikelmap_from_excel_fuzzy(path: str, kunde_filter: str | None = None)
 
     raise ValueError(f"Konnte in keiner Tabelle passende Spalten finden. Letzter Fehler: {last_err}")
 
+import csv
+
+def read_csv_robust(path: str | Path) -> tuple[pd.DataFrame, str, str]:
+    # delimiter + encoding grob erkennen
+    with open(path, "rb") as f:
+        sample = f.read(4096)
+
+    encoding = None
+    for enc in ("utf-8-sig", "cp1252", "latin1"):
+        try:
+            text = sample.decode(enc, errors="strict")
+            encoding = enc
+            break
+        except Exception:
+            pass
+    if encoding is None:
+        encoding = "latin1"
+        text = sample.decode(encoding, errors="ignore")
+
+    try:
+        dialect = csv.Sniffer().sniff(text, delimiters=";,|\t,")
+        sep = dialect.delimiter
+    except Exception:
+        sep = ";"
+
+    df = pd.read_csv(path, sep=sep, encoding=encoding, dtype=str)
+    return df, sep, encoding
+
 def main():
     # =====================================
     # Kundenauswahl
@@ -229,6 +258,7 @@ def main():
         "0": ("BEENDEN", None),
         "1": ("MB", "standard"),
         "2": ("NG", "ng"),
+        "3": ("NEF","nef"),
     }
 
     print("\nKunde auswählen:")
@@ -236,7 +266,7 @@ def main():
         print(f"  {key} = {label}")
 
     while True:
-        choice = input("Auswahl (0/1/2): ").strip()
+        choice = input("Auswahl (0/1/2/3): ").strip()
         if choice in KUNDEN:
             break
         print(Fore.RED + "Ungültige Auswahl – bitte 0, 1 oder 2 eingeben.")
@@ -248,12 +278,12 @@ def main():
 
     print(f"→ Gewählt: {label}\n")
     
-    input_file = INPUT_NG if kunde == "ng" else INPUT_MB
+    input_file = INPUT_NEF if kunde == "nef" else (INPUT_NG if kunde == "ng" else INPUT_MB)
     if not Path(input_file).exists():
         raise FileNotFoundError(f"Eingabedatei nicht gefunden: {input_file}")
 
     # =====================================
-    # Excel einlesen (abhängig vom Kunden)
+    # Einlesen (abhängig vom Kunden)
     # =====================================
     extra_excel_line = ""
 
@@ -262,30 +292,69 @@ def main():
         df_raw = pd.read_excel(input_file, header=None)
         df_raw = df_raw.dropna(subset=[0]).copy()
 
-        # NG-Mapping: 0=Artikelnummer, 1=Gewicht, 5=MHD, 6=Charge, 7=LG ID
         df = pd.DataFrame({
             "Artikelnummer": df_raw[0].astype(str).str.strip(),
-            "Benennung": "",                 # kommt gleich aus Artikelstamm
-            "LHM-Nr.": df_raw[7],            # wird später zu "LG ID"
+            "Benennung": "",
+            "LHM-Nr.": df_raw[7],
             "Charge": df_raw[6],
-            "Menge": 1,                      # Default (falls NG keine Menge liefert)
-            "Einheit": "BigBag",             # Default
-            "Stelltyp": "",                  # Default (Lademittel)
+            "Menge": 1,
+            "Einheit": "BigBag",
+            "Stelltyp": "",
             "MHD": df_raw[5],
-            "Gesamtgewicht": df_raw[1],      # wird später zu "Gewicht kg"
+            "Gesamtgewicht": df_raw[1],
         })
 
-        # --- Artikelstamm laden und Benennung füllen ---
+        # Artikelstamm → Bezeichnung
         artikel_map = load_artikelmap_from_excel_fuzzy("artikel.xlsx", kunde_filter="NG")
         df["Artikelnummer"] = df["Artikelnummer"].apply(_norm_match)
         df["Benennung"] = df["Artikelnummer"].map(artikel_map).fillna("")
-        missing = df.loc[df["Benennung"].eq(""), "Artikelnummer"].unique().tolist()
-        # DEBUG # print("DEBUG missing count:", len(missing), "sample:", missing[:10])
-        # DEBUG # print("DEBUG artikel_map size:", len(artikel_map))
-        # DEBUG # print("DEBUG artikel_map sample keys:", list(artikel_map.keys())[:10])
+
+    elif kunde == "nef":
+        # --- NEF: CSV einlesen (Encoding/Trenner robust) ---
+        df, sep, enc = read_csv_robust(input_file)
+        print(Fore.CYAN + f"[NEF] CSV gelesen (sep={sep!r}, encoding={enc!r})")
+
+        # Spaltennamen säubern
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # NEF-Spalten auf unsere Standardnamen bringen
+        rename_nef = {
+            "Menge Kart.": "Menge PS",
+            "Bruttogewicht kg": "Gewicht kg",
+        }
+        df = df.rename(columns=rename_nef)
+
+        # Pflichtspalten (so wie NEF sie wirklich liefert)
+        required = ["LG ID", "Artikel-Nr.", "Artikelbezeichnung", "Menge PS", "MHD", "Charge"]
+        missing_cols = [c for c in required if c not in df.columns]
+        if missing_cols:
+            raise ValueError(f"[NEF] Fehlende Spalten in CSV: {missing_cols}. Vorhanden: {list(df.columns)}")
+
+        # Defaults, weil NEF diese Spalten nicht liefert
+        if "Einheit" not in df.columns:
+            df["Einheit"] = "UMK"
+        if "Lademittel" not in df.columns:
+            df["Lademittel"] = ""
+        if "Gewicht kg" not in df.columns:
+            df["Gewicht kg"] = ""
+        if "Lagerort" not in df.columns:
+            df["Lagerort"] = ""
+        if "Sonstiger Text" not in df.columns:
+            df["Sonstiger Text"] = ""
+
+        # Typen wie bei euch
+        df["LG ID"] = pd.to_numeric(df["LG ID"], errors="coerce").fillna(0).astype(int)
+        df["Menge PS"] = pd.to_numeric(df["Menge PS"], errors="coerce").fillna(0).astype(int)
+
+        # Gewicht putzen (falls später gebraucht)
+        gewicht_raw = df["Gewicht kg"].astype(str).str.strip()
+        gewicht_raw = gewicht_raw.str.replace(r"[^0-9,\.]", "", regex=True)
+        gewicht_raw = gewicht_raw.str.replace(r"\.(?=[0-9]{3}(?:$|,))", "", regex=True)
+        gewicht_raw = gewicht_raw.str.replace(",", ".", regex=False)
+        df["Gewicht kg"] = pd.to_numeric(gewicht_raw, errors="coerce").fillna(0).round(2)
 
     else:
-        # --- STANDARD: dein bisheriger Header-Finder ---
+        # --- STANDARD: Header automatisch finden ---
         df_raw = pd.read_excel(input_file, header=None)
 
         expected_headers = [
@@ -317,100 +386,70 @@ def main():
         df = df_raw.iloc[header_row_idx + 1:].copy()
         df.columns = header_row
 
-    # Nur relevante Spalten
-    df = df[columns_to_keep]
-
-    # Vollständig leere Zeilen entfernen
-    df = df.dropna(how="all")
-
-    # Nur Zeilen mit wirklich numerischer Artikelnummer behalten, aber als STRING
-    art_raw = df["Artikelnummer"].astype(str).str.strip()
-    art_raw = df["Artikelnummer"].astype(str).str.strip()
-
-    pattern = r"\d+(?:\.\d+)?" if kunde == "ng" else r"\d+"
-    mask_art = art_raw.str.fullmatch(pattern)
-
-    df = df[mask_art].copy()
-    df["Artikelnummer"] = art_raw[mask_art]
-    
-    # =====================================
-    # MHD robust parsen (Text + Excel-Seriennummer)
-    # =====================================
-    mhd_raw = df["MHD"]
-
-    # 1. normale Datumsangaben (Tag zuerst)
-    mhd_parsed = pd.to_datetime(mhd_raw, errors="coerce", dayfirst=True)
-
-    # 2. reine Zahlen (int/float) → Excel-Seriennummern
-    mask_num = mhd_raw.notna() & mhd_raw.apply(lambda x: isinstance(x, (int, float)))
-    if mask_num.any():
-        mhd_parsed.loc[mask_num] = pd.to_datetime(
-            mhd_raw[mask_num].astype(float),
-            unit="D",
-            origin="1899-12-30"
-        )
-
-    # 3. Zahlen als Text
-    mask_digit_str = mhd_raw.notna() & ~mask_num & mhd_raw.astype(str).str.fullmatch(r"\d+")
-    if mask_digit_str.any():
-        mhd_parsed.loc[mask_digit_str] = pd.to_datetime(
-            mhd_raw[mask_digit_str].astype(float),
-            unit="D",
-            origin="1899-12-30"
-        )
-
-    df["MHD"] = mhd_parsed.dt.strftime("%d.%m.%Y")
-
-    # Spalten umbenennen
-    df = df.rename(columns=rename_map)
-
-    # Einheit: "Container" → "UMK"
-    df["Einheit"] = df["Einheit"].apply(
-        lambda x: "UMK" if isinstance(x, str) and x.strip().lower() == "container" else x
-    )
-
-    # Lademittel normalisieren
-    df["Lademittel"] = df["Lademittel"].apply(map_lademittel)
 
     # =====================================
-    # Menge & Gewicht vorbereiten
+    # MB/NG Aufbereitung (NEF überspringen!)
     # =====================================
-    df["Menge PS"] = pd.to_numeric(df["Menge PS"], errors="coerce").fillna(0)
+    if kunde != "nef":
+        df = df[columns_to_keep]
+        df = df.dropna(how="all")
 
-    gewicht_raw = df["Gewicht kg"].astype(str).str.strip()
-    gewicht_raw = gewicht_raw.str.replace(r"[^0-9,\.]", "", regex=True)
-    gewicht_raw = gewicht_raw.str.replace(r"\.(?=[0-9]{3}(?:$|,))", "", regex=True)
-    gewicht_raw = gewicht_raw.str.replace(",", ".", regex=False)
-    df["Gewicht kg"] = pd.to_numeric(gewicht_raw, errors="coerce").fillna(0)
+        art_raw = df["Artikelnummer"].astype(str).str.strip()
+        pattern = r"\d+(?:\.\d+)?" if kunde == "ng" else r"\d+"
+        mask_art = art_raw.str.fullmatch(pattern)
 
-    # =====================================
-    # Gruppierung nach LG ID
-    # =====================================
-    df = df.groupby("LG ID", as_index=False).agg({
-        "Artikel-Nr.": "first",
-        "Artikelbezeichnung": "first",
-        "Charge": "first",
-        "Menge PS": "sum",
-        "Einheit": "first",
-        "Lademittel": "first",
-        "MHD": "first",
-        "Gewicht kg": "sum",
-    })
+        df = df[mask_art].copy()
+        df["Artikelnummer"] = art_raw[mask_art]
 
-    # Artikelnummer auf 6 Stellen mit führenden Nullen
-    df["Artikel-Nr."] = df["Artikel-Nr."].astype(str).str.strip()
-    if kunde == "standard":
-        df["Artikel-Nr."] = df["Artikel-Nr."].str.zfill(6)
+        # MHD robust parsen
+        mhd_raw = df["MHD"]
+        mhd_parsed = pd.to_datetime(mhd_raw, errors="coerce", dayfirst=True)
 
-    df["LG ID"] = pd.to_numeric(df["LG ID"], errors="coerce").fillna(0).astype(int)
-    df["Menge PS"] = df["Menge PS"].fillna(0).astype(int)
+        mask_num = mhd_raw.notna() & mhd_raw.apply(lambda x: isinstance(x, (int, float)))
+        if mask_num.any():
+            mhd_parsed.loc[mask_num] = pd.to_datetime(mhd_raw[mask_num].astype(float), unit="D", origin="1899-12-30")
 
-    # Charge als Zahl → String (ohne wissenschaftl. Notation)
-    charge_num = pd.to_numeric(df["Charge"], errors="coerce").fillna(0).astype(int)
-    df["Charge"] = charge_num.astype(str)
+        mask_digit_str = mhd_raw.notna() & ~mask_num & mhd_raw.astype(str).str.fullmatch(r"\d+")
+        if mask_digit_str.any():
+            mhd_parsed.loc[mask_digit_str] = pd.to_datetime(mhd_raw[mask_digit_str].astype(float), unit="D", origin="1899-12-30")
 
-    # Gewicht auf 2 Nachkommastellen runden
-    df["Gewicht kg"] = df["Gewicht kg"].round(2)
+        df["MHD"] = mhd_parsed.dt.strftime("%d.%m.%Y")
+
+        df = df.rename(columns=rename_map)
+
+        df["Einheit"] = df["Einheit"].apply(lambda x: "UMK" if isinstance(x, str) and x.strip().lower() == "container" else x)
+        df["Lademittel"] = df["Lademittel"].apply(map_lademittel)
+
+        df["Menge PS"] = pd.to_numeric(df["Menge PS"], errors="coerce").fillna(0)
+
+        gewicht_raw = df["Gewicht kg"].astype(str).str.strip()
+        gewicht_raw = gewicht_raw.str.replace(r"[^0-9,\.]", "", regex=True)
+        gewicht_raw = gewicht_raw.str.replace(r"\.(?=[0-9]{3}(?:$|,))", "", regex=True)
+        gewicht_raw = gewicht_raw.str.replace(",", ".", regex=False)
+        df["Gewicht kg"] = pd.to_numeric(gewicht_raw, errors="coerce").fillna(0)
+
+        df = df.groupby("LG ID", as_index=False).agg({
+            "Artikel-Nr.": "first",
+            "Artikelbezeichnung": "first",
+            "Charge": "first",
+            "Menge PS": "sum",
+            "Einheit": "first",
+            "Lademittel": "first",
+            "MHD": "first",
+            "Gewicht kg": "sum",
+        })
+
+        df["Artikel-Nr."] = df["Artikel-Nr."].astype(str).str.strip()
+        if kunde == "standard":
+            df["Artikel-Nr."] = df["Artikel-Nr."].str.zfill(6)
+
+        df["LG ID"] = pd.to_numeric(df["LG ID"], errors="coerce").fillna(0).astype(int)
+        df["Menge PS"] = df["Menge PS"].fillna(0).astype(int)
+
+        charge_num = pd.to_numeric(df["Charge"], errors="coerce").fillna(0).astype(int)
+        df["Charge"] = charge_num.astype(str)
+
+        df["Gewicht kg"] = df["Gewicht kg"].round(2)
 
     # Zusatzspalten
     df["Lagerort"] = ""
@@ -457,89 +496,113 @@ def main():
                     result.append(int(part))
             return sorted(set(result))
 
-        while True:
-            prompt = (
-                f"Möchten Sie '{Fore.YELLOW}Lagerort{Style.RESET_ALL}' und "
-                f"'{Fore.YELLOW}Sonstiger Text{Style.RESET_ALL}' setzen? "
-                f"({Fore.GREEN}j{Style.RESET_ALL}=alle / "
-                f"{Fore.RED}n{Style.RESET_ALL}=keine / "
-                f"{Fore.CYAN}a{Style.RESET_ALL}=Auswahl / "
-                f"{Fore.CYAN}h{Style.RESET_ALL}=Help): "
-            )
-            answer = input(prompt).strip().lower()
-
-            if answer == "h":
-                print(main_help)
-                continue
-            if answer in ("j", "n", "a"):
-                break
-            print(f"{Fore.RED}Ungültige Eingabe – 'h' für Hilfe.{Style.RESET_ALL}")
-
-        if answer == "j":
-            lagerort = input(f"{Fore.YELLOW}Lagerort (leer = keine Änderung):{Style.RESET_ALL} ").strip()
-            sonstiger_text = input(f"{Fore.YELLOW}'Sonstiger Text' (leer = keine Änderung):{Style.RESET_ALL} ").strip()
+        # ============================
+        # NEF: nur Lagerort abfragen
+        # ============================
+        if kunde == "nef":
+            lagerort = input(
+                f"{Fore.YELLOW}Lagerort (NEF) – leer = keine Änderung:{Style.RESET_ALL} "
+            ).strip()
             if lagerort:
                 df["Lagerort"] = lagerort
-            if sonstiger_text:
-                df["Sonstiger Text"] = sonstiger_text
 
-        elif answer == "a":
-            print("\nVerfügbare Zeilen:")
-            tmp = df[["Artikel-Nr.", "Artikelbezeichnung"]].copy()
-            tmp.insert(0, "Zeile", range(1, len(tmp) + 1))
-            print(tmp.to_string(index=False))
-
+        # ============================
+        # MB/NG: alter Dialog
+        # ============================
+        else:
             while True:
-                auswahl = input(
-                    f"{Fore.CYAN}Zeilen/Bereiche eingeben "
-                    f"(z.B. 1-10, 17-25 | h=Help | Enter=fertig):{Style.RESET_ALL} "
-                ).strip().lower()
+                prompt = (
+                    f"Möchten Sie '{Fore.YELLOW}Lagerort{Style.RESET_ALL}' und "
+                    f"'{Fore.YELLOW}Sonstiger Text{Style.RESET_ALL}' setzen? "
+                    f"({Fore.GREEN}j{Style.RESET_ALL}=alle / "
+                    f"{Fore.RED}n{Style.RESET_ALL}=keine / "
+                    f"{Fore.CYAN}a{Style.RESET_ALL}=Auswahl / "
+                    f"{Fore.CYAN}h{Style.RESET_ALL}=Help): "
+                )
+                answer = input(prompt).strip().lower()
 
-                if auswahl == "":
-                    print(f"{Fore.GREEN}Auswahl beendet.{Style.RESET_ALL}")
+                if answer == "h":
+                    print(main_help)
+                    continue
+                if answer in ("j", "n", "a"):
                     break
-                if auswahl == "h":
-                    print(select_help)
-                    continue
+                print(f"{Fore.RED}Ungültige Eingabe – 'h' für Hilfe.{Style.RESET_ALL}")
 
-                try:
-                    rows_1_based = parse_ranges(auswahl)
-                    max_row = len(df)
-                    rows = [r - 1 for r in rows_1_based if 1 <= r <= max_row]
-                    if not rows:
-                        print(f"{Fore.RED}Keine gültigen Zeilen ausgewählt.{Style.RESET_ALL}")
-                        continue
-                except Exception:
-                    print(f"{Fore.RED}Ungültige Eingabe – 'h' für Hilfe.{Style.RESET_ALL}")
-                    continue
-
-                lagerort = input(f"{Fore.YELLOW}Lagerort für diese Auswahl (leer = keine Änderung):{Style.RESET_ALL} ").strip()
-                sonstiger_text = input(f"{Fore.YELLOW}'Sonstiger Text' für diese Auswahl (leer = keine Änderung):{Style.RESET_ALL} ").strip()
-
-                if not lagerort and not sonstiger_text:
-                    print(f"{Fore.RED}Keine Änderungen eingegeben – Auswahl übersprungen.{Style.RESET_ALL}")
-                    continue
-
+            if answer == "j":
+                lagerort = input(f"{Fore.YELLOW}Lagerort (leer = keine Änderung):{Style.RESET_ALL} ").strip()
+                sonstiger_text = input(f"{Fore.YELLOW}'Sonstiger Text' (leer = keine Änderung):{Style.RESET_ALL} ").strip()
                 if lagerort:
-                    df.loc[rows, "Lagerort"] = lagerort
+                    df["Lagerort"] = lagerort
                 if sonstiger_text:
-                    df.loc[rows, "Sonstiger Text"] = sonstiger_text
+                    df["Sonstiger Text"] = sonstiger_text
 
-        elif answer == "n":
-            print(f"{Fore.GREEN}Keine Änderungen an Lagerort / Sonstiger Text.{Style.RESET_ALL}")
+            elif answer == "a":
+                print("\nVerfügbare Zeilen:")
+                tmp = df[["Artikel-Nr.", "Artikelbezeichnung"]].copy()
+                tmp.insert(0, "Zeile", range(1, len(tmp) + 1))
+                print(tmp.to_string(index=False))
+
+                while True:
+                    auswahl = input(
+                        f"{Fore.CYAN}Zeilen/Bereiche eingeben "
+                        f"(z.B. 1-10, 17-25 | h=Help | Enter=fertig):{Style.RESET_ALL} "
+                    ).strip().lower()
+
+                    if auswahl == "":
+                        print(f"{Fore.GREEN}Auswahl beendet.{Style.RESET_ALL}")
+                        break
+                    if auswahl == "h":
+                        print(select_help)
+                        continue
+
+                    try:
+                        rows_1_based = parse_ranges(auswahl)
+                        max_row = len(df)
+                        rows = [r - 1 for r in rows_1_based if 1 <= r <= max_row]
+                        if not rows:
+                            print(f"{Fore.RED}Keine gültigen Zeilen ausgewählt.{Style.RESET_ALL}")
+                            continue
+                    except Exception:
+                        print(f"{Fore.RED}Ungültige Eingabe – 'h' für Hilfe.{Style.RESET_ALL}")
+                        continue
+
+                    lagerort = input(f"{Fore.YELLOW}Lagerort für diese Auswahl (leer = keine Änderung):{Style.RESET_ALL} ").strip()
+                    sonstiger_text = input(f"{Fore.YELLOW}'Sonstiger Text' für diese Auswahl (leer = keine Änderung):{Style.RESET_ALL} ").strip()
+
+                    if not lagerort and not sonstiger_text:
+                        print(f"{Fore.RED}Keine Änderungen eingegeben – Auswahl übersprungen.{Style.RESET_ALL}")
+                        continue
+
+                    if lagerort:
+                        df.loc[rows, "Lagerort"] = lagerort
+                    if sonstiger_text:
+                        df.loc[rows, "Sonstiger Text"] = sonstiger_text
+
+            elif answer == "n":
+                print(f"{Fore.GREEN}Keine Änderungen an Lagerort / Sonstiger Text.{Style.RESET_ALL}")
 
         # Artikelnummern immer behandeln
         df["Artikel-Nr."] = df["Artikel-Nr."].astype(str)
-        mask_verkauf = df["Sonstiger Text"].str.lower() == "verkaufsware"
-        df.loc[mask_verkauf, "Artikel-Nr."] = df.loc[mask_verkauf, "Artikel-Nr."] + " S"
 
-        prefix = "NG " if kunde == "ng" else "MB "
-        df["Artikel-Nr."] = prefix + df["Artikel-Nr."].astype(str)
+        # --- " S" NUR für MB + Verkaufsware ---
+        if kunde == "standard":
+            mask_verkauf = df["Sonstiger Text"].str.lower() == "verkaufsware"
+            df.loc[mask_verkauf, "Artikel-Nr."] = df.loc[mask_verkauf, "Artikel-Nr."] + " S"
+
+        # --- Prefix je Kunde ---
+        if kunde == "ng":
+            prefix = "NG "
+        elif kunde == "nef":
+            prefix = "NEF "
+        else:
+            prefix = "MB "
+
+        df["Artikel-Nr."] = prefix + df["Artikel-Nr."]
         
         # DEBUG # print("DEBUG Artikel-Nr.:", df["Artikel-Nr."].head().tolist())
 
     except EOFError:
-        prefix = "NG " if kunde == "ng" else "MB "
+        prefix = "NG " if kunde == "ng" else ("NEF " if kunde == "nef" else "MB ")
         df["Artikel-Nr."] = prefix + df["Artikel-Nr."].astype(str)
 
     # Zusatzzeile für Excel
@@ -556,7 +619,10 @@ def main():
     # Index & Spaltenreihenfolge
     # =====================================
     df = df.reset_index(drop=True)
-    df.insert(0, "Nr.", df.index + 1)
+    if "Nr." not in df.columns:
+        df.insert(0, "Nr.", df.index + 1)
+    else:
+        df["Nr."] = range(1, len(df) + 1)
 
     output_columns = [
         "Nr.",
@@ -576,6 +642,9 @@ def main():
 
     # Gewicht in CSV wieder mit Komma
     df["Gewicht kg"] = df["Gewicht kg"].apply(lambda x: str(x).replace(".", ","))
+
+    # LG ID sicher numerisch (verhindert führendes "'" in Excel)
+    df["LG ID"] = pd.to_numeric(df["LG ID"], errors="coerce").fillna(0).astype(int)
 
     # =====================================
     # CSV speichern
@@ -629,6 +698,6 @@ def main():
 
 
 if __name__ == "__main__":
-    print(Fore.MAGENTA + f"MB-Import Version {VERSION} mlu")
+    print(Fore.YELLOW + f"UnivImport Version {VERSION} mlu")
     ensure_latest_version()
     main()
