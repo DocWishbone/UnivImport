@@ -46,7 +46,7 @@ from colorama import init, Fore, Style
 
 init(autoreset=True)
 
-VERSION = "2.2.5"
+VERSION = "2.2.6"
 
 #########################################
 # UnivImport.py - 17.12.2025 - m.ludwig #
@@ -341,6 +341,11 @@ def main():
             df["Lagerort"] = ""
         if "Sonstiger Text" not in df.columns:
             df["Sonstiger Text"] = ""
+        
+        if "Lademittel" in df.columns:
+            df = df.drop(columns=["Lademittel"])
+        if "Sonstiger Text" in df.columns:
+            df = df.drop(columns=["Sonstiger Text"])
 
         # Typen wie bei euch
         df["LG ID"] = pd.to_numeric(df["LG ID"], errors="coerce").fillna(0).astype(int)
@@ -624,21 +629,37 @@ def main():
     else:
         df["Nr."] = range(1, len(df) + 1)
 
-    output_columns = [
-        "Nr.",
-        "Artikel-Nr.",
-        "Artikelbezeichnung",
-        "LG ID",
-        "Charge",
-        "Menge PS",
-        "Einheit",
-        "Lademittel",
-        "MHD",
-        "Gewicht kg",
-        "Lagerort",
-        "Sonstiger Text",
-    ]
+    if kunde == "nef":
+        output_columns = [
+            "Nr.",
+            "Artikel-Nr.",
+            "Artikelbezeichnung",
+            "LG ID",
+            "Charge",
+            "Menge PS",
+            "Einheit",
+            "MHD",
+            "Gewicht kg",
+            "Lagerort",
+        ]
+    else:
+        output_columns = [
+            "Nr.",
+            "Artikel-Nr.",
+            "Artikelbezeichnung",
+            "LG ID",
+            "Charge",
+            "Menge PS",
+            "Einheit",
+            "Lademittel",
+            "MHD",
+            "Gewicht kg",
+            "Lagerort",
+            "Sonstiger Text",
+        ]
+
     df = df[output_columns]
+
 
     # Gewicht in CSV wieder mit Komma
     df["Gewicht kg"] = df["Gewicht kg"].apply(lambda x: str(x).replace(".", ","))
