@@ -61,6 +61,18 @@ INPUT_NG = "NG.xlsx"
 INPUT_NEF = "NEF.csv"
 OUTPUT_CSV = r"\\hrl.local\fs\data\niederegger\csv\mb\import.csv"
 OUTPUT_XLSX = "import.xlsx"
+START_BANNER = r"""
+              *
+             ***
+            *****
+           *******
+          *********
+         ***********
+             |||
+             |||
+
+      UnivImport – Ho Ho Ho, Frohe Festtage und guten Rutsch .... 🎅
+"""
 
 # Spalten, die wir aus der Originaldatei behalten möchten
 columns_to_keep = [
@@ -719,6 +731,7 @@ def main():
 
 
 if __name__ == "__main__":
+    print(Fore.GREEN + START_BANNER)
     print(Fore.YELLOW + f"UnivImport Version {VERSION} mlu")
     ensure_latest_version()
     main()
