@@ -46,7 +46,7 @@ from colorama import init, Fore, Style
 
 init(autoreset=True)
 
-VERSION = "2.2.6"
+VERSION = "2.2.7"
 
 #########################################
 # UnivImport.py - 17.12.2025 - m.ludwig #
@@ -54,6 +54,8 @@ VERSION = "2.2.6"
 
 # Zentrale Master-Version des Scripts auf dem Netzlaufwerk
 UPDATE_SOURCE = r"\\hrl.local\fs\data\MindenBruhns\MBImport\UnivImport\UnivImport.py"
+# Zentrale Master-Version der Artikelstammdaten auf dem Netzlaufwerk
+UPDATE_SOURCE_ARTIKEL = r"\\hrl.local\fs\data\MindenBruhns\MBImport\UnivImport\artikel.xlsx"
 
 # === Einstellungen ===
 INPUT_MB = "Mappe1.xlsx"
@@ -61,17 +63,15 @@ INPUT_NG = "NG.xlsx"
 INPUT_NEF = "NEF.csv"
 OUTPUT_CSV = r"\\hrl.local\fs\data\niederegger\csv\mb\import.csv"
 OUTPUT_XLSX = "import.xlsx"
-START_BANNER = r"""
-              *
-             ***
-            *****
-           *******
-          *********
-         ***********
-             |||
-             |||
 
-      UnivImport – Ho Ho Ho, Frohe Festtage und guten Rutsch .... 🎅
+START_BANNER = r"""
+             **
+            ****
+           ******
+         UnivImport - Universelles Import-Tool Lager 3/4
+           ******
+            ****
+             **
 """
 
 # Spalten, die wir aus der Originaldatei behalten möchten
@@ -120,62 +120,97 @@ def map_lademittel(value: str) -> str:
 
 def ensure_latest_version():
     """
-    Prüft, ob auf dem Netzlaufwerk eine neuere import.py liegt.
+    Prüft, ob auf dem Netzlaufwerk eine neuere UnivImport.py liegt.
     Wenn ja, wird sie über die lokale Datei kopiert und das Script neu gestartet.
+
+    Zusätzlich: Aktualisiert artikel.xlsx (ohne Neustart), wenn im Netzlaufwerk neuer.
     """
     try:
-        local_path = Path(__file__).resolve()
+        local_script_path = Path(__file__).resolve()
     except NameError:
         print(Fore.RED + "[Update] Konnte __file__ nicht bestimmen – Update-Check wird übersprungen.")
         return
 
-    network_path = Path(UPDATE_SOURCE)
+    network_script_path = Path(UPDATE_SOURCE)
 
-    # print(Fore.CYAN + f"[Update] Lokales Script : {local_path}")
-    # print(Fore.CYAN + f"[Update] Master-Script : {network_path}")
+    # --- 1) Script-Update (wie bisher) ---
+    if network_script_path.exists():
+        try:
+            net_mtime = network_script_path.stat().st_mtime
+            local_mtime = local_script_path.stat().st_mtime
+        except OSError as e:
+            print(Fore.RED + f"[Update] Fehler beim Lesen der Dateizeitstempel (Script): {e}")
+        else:
+            print(Fore.CYAN + f"[Update] Lokales Script : {datetime.fromtimestamp(local_mtime)}")
+            print(Fore.CYAN + f"[Update] Master  Script : {datetime.fromtimestamp(net_mtime)}")
 
-    if not network_path.exists():
-        print(Fore.YELLOW + "[Update] Master-Script nicht gefunden – kein Update möglich.")
-        return
+            if net_mtime > local_mtime:
+                try:
+                    shutil.copy2(network_script_path, local_script_path)
+                    print(Fore.GREEN + "\n=== UPDATE DURCHGEFÜHRT (SCRIPT) ===")
+                    print(Fore.GREEN + f"Neue Version von: {network_script_path}")
+                    print(Fore.GREEN + f"Aktualisiert nach: {local_script_path}")
+                    print(Fore.GREEN + "Script wird mit der neuen Version neu gestartet...")
 
+                    python_exe = sys.executable or "python"
+                    script_path = str(local_script_path)
+
+                    subprocess.Popen([python_exe, script_path] + sys.argv[1:])
+                    sys.exit(0)
+
+                except Exception as e:
+                    print(Fore.RED + f"[Update] Fehler beim Aktualisieren der Script-Version: {e}")
+                    print(Fore.YELLOW + "Es wird mit der aktuellen lokalen Version fortgefahren.")
+            else:
+                print(Fore.GREEN + "[Update] Script ist aktuell. Kein Update nötig.")
+    else:
+        print(Fore.YELLOW + "[Update] Master-Script nicht gefunden – Script-Update nicht möglich.")
+
+    # --- 2) artikel.xlsx Update (ohne Neustart) ---
     try:
-        net_mtime = network_path.stat().st_mtime
-        local_mtime = local_path.stat().st_mtime
-    except OSError as e:
-        print(Fore.RED + f"[Update] Fehler beim Lesen der Dateizeitstempel: {e}")
+        network_art_path = Path(UPDATE_SOURCE_ARTIKEL)
+        local_art_path = local_script_path.parent / "artikel.xlsx"  # so nutzt dein Code die Datei
+    except Exception as e:
+        print(Fore.RED + f"[Update] Fehler beim Ermitteln der artikel.xlsx-Pfade: {e}")
         return
 
-    print(Fore.CYAN + f"[Update] Lokales Datum : {datetime.fromtimestamp(local_mtime)}")
-    print(Fore.CYAN + f"[Update] Master-Datum : {datetime.fromtimestamp(net_mtime)}")
+    if not network_art_path.exists():
+        print(Fore.YELLOW + "[Update] Master artikel.xlsx nicht gefunden – kein Update möglich.")
+        return
 
-    # Nur wenn die Netzlaufwerk-Version wirklich neuer ist
+    # Wenn lokal nicht existiert -> einfach kopieren
+    if not local_art_path.exists():
+        try:
+            shutil.copy2(network_art_path, local_art_path)
+            print(Fore.GREEN + f"[Update] artikel.xlsx wurde neu angelegt: {local_art_path}")
+        except Exception as e:
+            print(Fore.RED + f"[Update] Konnte artikel.xlsx nicht kopieren: {e}")
+        return
+
+    # mtime vergleichen
+    try:
+        net_mtime = network_art_path.stat().st_mtime
+        local_mtime = local_art_path.stat().st_mtime
+    except OSError as e:
+        print(Fore.RED + f"[Update] Fehler beim Lesen der Dateizeitstempel (artikel.xlsx): {e}")
+        return
+
+    print(Fore.CYAN + f"[Update] Lokale  artikel.xlsx : {datetime.fromtimestamp(local_mtime)}")
+    print(Fore.CYAN + f"[Update] Master  artikel.xlsx : {datetime.fromtimestamp(net_mtime)}")
+
     if net_mtime > local_mtime:
         try:
-            shutil.copy2(network_path, local_path)
-            print(Fore.GREEN + "\n=== UPDATE DURCHGEFÜHRT ===")
-            print(Fore.GREEN + f"Neue Version von: {network_path}")
-            print(Fore.GREEN + f"Aktualisiert nach: {local_path}")
-            print(Fore.GREEN + "Script wird mit der neuen Version neu gestartet...")
+            # Backup, damit nichts verloren geht
+            backup_path = local_art_path.with_suffix(".xlsx.bak")
+            shutil.copy2(local_art_path, backup_path)
 
-            python_exe = sys.executable or "python"
-            script_path = str(local_path)
-
-            # Debug-Ausgabe
-            print(Fore.CYAN + "[Update] Neustart-Befehl:")
-            print(Fore.CYAN + f"         {python_exe!r} {script_path!r} {sys.argv[1:]}")
-
-            # Neuen Prozess mit sauber getrennten Argumenten starten
-            subprocess.Popen([python_exe, script_path] + sys.argv[1:])
-
-            print(Fore.CYAN + "[Update] Alter Prozess wird beendet.")
-            sys.exit(0)
-
+            shutil.copy2(network_art_path, local_art_path)
+            print(Fore.GREEN + f"[Update] artikel.xlsx aktualisiert. Backup: {backup_path}")
         except Exception as e:
-            print(Fore.RED + f"[Update] Fehler beim Aktualisieren der Script-Version: {e}")
-            print(Fore.YELLOW + "Es wird mit der aktuellen lokalen Version fortgefahren.")
-            return
+            print(Fore.RED + f"[Update] Fehler beim Aktualisieren von artikel.xlsx: {e}")
+            print(Fore.YELLOW + "Tipp: Falls artikel.xlsx gerade in Excel geöffnet ist, schließen und erneut starten.")
     else:
-        print(Fore.GREEN + "[Update] Lokale Version ist aktuell (oder neuer). Kein Update nötig.")
+        print(Fore.GREEN + "[Update] artikel.xlsx ist aktuell. Kein Update nötig.")
 
 import pandas as pd
 
